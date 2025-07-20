@@ -1,0 +1,21 @@
+# Requirements for sample-agent project
+# Python 3.11+ required
+
+# Core MCP libraries
+fastmcp>=2.10.6
+mcp>=1.12.0
+
+# OpenAI API client
+openai>=1.97.0
+
+# HTTP client library
+httpx>=0.28.1
+
+# Additional dependencies that may be needed depending on usage
+# (These are typically installed automatically by the above packages)
+# anyio
+# pydantic
+# uvicorn
+# starlette
+# httpx-sse
+# jsonschema 
