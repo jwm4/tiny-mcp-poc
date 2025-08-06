@@ -4,6 +4,7 @@ A flexible AI assistant that connects OpenAI's GPT models with MCP (Model Contex
 
 ## Features
 
+- **Multi-Server Support**: Connect to multiple MCP servers simultaneously
 - **Configurable MCP Servers**: Support for local and remote MCP servers
 - **Multiple Transport Types**: Local (stdio), Remote HTTP, and Remote SSE
 - **Tool Filtering**: Select specific tools from MCP servers  
@@ -73,7 +74,7 @@ from openai_mcp_agent import Agent, InferenceClient
 
 async def main():
     # Create and use an agent with default OpenAI
-    async with Agent(server_spec="weather_mcp_server.py") as agent:
+    async with Agent(server_specs="weather_mcp_server.py") as agent:
         response = await agent.chat("What's the weather in London?")
         print(response)
 
@@ -91,7 +92,7 @@ async def main():
     client = InferenceClient(model="gpt-4o-mini")
     
     # Create agent with custom client
-    async with Agent(server_spec="weather_mcp_server.py", inference_client=client) as agent:
+    async with Agent(server_specs="weather_mcp_server.py", inference_client=client) as agent:
         response = await agent.chat("What's the weather in London?")
         print(response)
 
@@ -117,7 +118,7 @@ python openai_mcp_agent.py --server 'weather_mcp_server.py[get_current_weather]'
 
 ```python
 # Option 1: Server specification string
-agent = Agent(server_spec="weather_mcp_server.py[get_current_weather]")
+agent = Agent(server_specs="weather_mcp_server.py[get_current_weather]")
 
 # Option 2: Server configuration object
 from openai_mcp_agent import LocalMCPServerConfig
@@ -126,7 +127,7 @@ agent = Agent(server_config=config)
 
 # Option 3: Direct parameters
 agent = Agent(
-    server_spec="weather_mcp_server.py",
+    server_specs="weather_mcp_server.py",
     tools=["get_current_weather"]
 )
 
@@ -134,13 +135,13 @@ agent = Agent(
 from openai_mcp_agent import InferenceClient
 client = InferenceClient(model="gpt-4o-mini")
 agent = Agent(
-    server_spec="weather_mcp_server.py",
+    server_specs="weather_mcp_server.py",
     inference_client=client
 )
 
 # Option 5: All parameters
 agent = Agent(
-    server_spec="weather_mcp_server.py",
+    server_specs="weather_mcp_server.py",
     tools=["get_current_weather"],
     inference_client=InferenceClient(model="gpt-4o-mini")
 )
@@ -151,7 +152,7 @@ agent = Agent(
 #### 1. Factory Method (Recommended)
 ```python
 # Create and initialize in one step
-agent = await Agent.create(server_spec="weather_mcp_server.py")
+agent = await Agent.create(server_specs="weather_mcp_server.py")
 if agent:
     response = await agent.chat("Hello!")
     await agent.cleanup()
@@ -159,7 +160,7 @@ if agent:
 # With custom inference client
 from openai_mcp_agent import InferenceClient
 client = InferenceClient(model="gpt-4o-mini")
-agent = await Agent.create(server_spec="weather_mcp_server.py", inference_client=client)
+agent = await Agent.create(server_specs="weather_mcp_server.py", inference_client=client)
 if agent:
     response = await agent.chat("Hello!")
     await agent.cleanup()
@@ -168,7 +169,7 @@ if agent:
 #### 2. Async Context Manager (Recommended)
 ```python
 # Automatic cleanup
-async with Agent(server_spec="weather_mcp_server.py") as agent:
+async with Agent(server_specs="weather_mcp_server.py") as agent:
     response = await agent.chat("Hello!")
 # Agent is automatically cleaned up here
 ```
@@ -176,7 +177,7 @@ async with Agent(server_spec="weather_mcp_server.py") as agent:
 #### 3. Manual Management
 ```python
 # Manual initialization and cleanup
-agent = Agent(server_spec="weather_mcp_server.py")
+agent = Agent(server_specs="weather_mcp_server.py")
 await agent.initialize()
 response = await agent.chat("Hello!")
 await agent.cleanup()
@@ -185,7 +186,7 @@ await agent.cleanup()
 #### 4. One-off Messages
 ```python
 # For single messages
-async with Agent(server_spec="weather_mcp_server.py") as agent:
+async with Agent(server_specs="weather_mcp_server.py") as agent:
     response = await agent.chat("What's the weather?")
 ```
 
@@ -195,13 +196,13 @@ async with Agent(server_spec="weather_mcp_server.py") as agent:
 
 ```python
 # Simple path (uses python by default)
-Agent(server_spec="weather_mcp_server.py")
+Agent(server_specs="weather_mcp_server.py")
 
 # Explicit local with custom command
-Agent(server_spec="local:my_server.js:node")
+Agent(server_specs="local:my_server.js:node")
 
 # With tool filtering
-Agent(server_spec="weather_mcp_server.py[get_current_weather,get_forecast]")
+Agent(server_specs="weather_mcp_server.py[get_current_weather,get_forecast]")
 ```
 
 ### Server Configuration Objects
@@ -236,10 +237,10 @@ Tools can be filtered in several ways:
 
 ```python
 # 1. In server specification
-Agent(server_spec="weather_mcp_server.py[get_current_weather,get_forecast]")
+Agent(server_specs="weather_mcp_server.py[get_current_weather,get_forecast]")
 
 # 2. As separate parameter
-Agent(server_spec="weather_mcp_server.py", tools=["get_current_weather"])
+Agent(server_specs="weather_mcp_server.py", tools=["get_current_weather"])
 
 # 3. In server config object
 config = LocalMCPServerConfig("weather_mcp_server.py", tools=["get_current_weather"])
@@ -280,12 +281,94 @@ python openai_mcp_agent.py --help
 --server remote:ws://localhost:8000               # WebSocket (not supported yet)
 ```
 
+## Multi-Server Support
+
+The agent now supports connecting to multiple MCP servers simultaneously, allowing you to use tools from different servers in a single conversation.
+
+### Command Line Multi-Server Usage
+
+```bash
+# Connect to multiple servers
+python openai_mcp_agent.py --server weather_mcp_server.py --server nps_mcp_server.py
+
+# Mix local and remote servers
+python openai_mcp_agent.py --server weather.py --server remote:http://localhost:8000
+
+# Apply tool filtering to all servers
+python openai_mcp_agent.py --server weather.py --server nps.py --tools get_weather,search_parks
+
+# Per-server tool filtering
+python openai_mcp_agent.py --server 'weather.py[get_weather]' --server 'nps.py[search_parks]'
+```
+
+### Programmatic Multi-Server Usage
+
+#### Using Server Configurations
+
+```python
+from openai_mcp_agent import Agent, LocalMCPServerConfig, RemoteMCPServerConfig
+
+# Multiple local servers
+server_configs = [
+    LocalMCPServerConfig("weather_mcp_server.py"),
+    LocalMCPServerConfig("nps_mcp_server.py"),
+]
+
+agent = await Agent.create(server_configs=server_configs)
+print(f"Connected to {len(agent.server_infos)} servers")
+print(f"Available tools: {agent.all_tool_names}")
+
+response = await agent.chat("What's the weather in Yosemite?")
+await agent.cleanup()
+```
+
+#### Using Server Specifications
+
+```python
+# Multiple servers with string specifications
+server_specs = [
+    "weather_mcp_server.py[get_current_weather]",  # Only weather tools
+    "nps_mcp_server.py",                          # All NPS tools
+    "remote:http://localhost:8000"                # Remote server
+]
+
+agent = await Agent.create(server_specs=server_specs)
+response = await agent.chat("Find parks near San Francisco and check the weather")
+await agent.cleanup()
+```
+
+#### Mixed Configuration
+
+```python
+# Combine different server types
+mixed_configs = [
+    LocalMCPServerConfig("weather.py", tools=["get_weather"]),
+    RemoteMCPServerConfig("http://localhost:8000", transport_type="sse"),
+]
+
+async with Agent(server_configs=mixed_configs) as agent:
+    # Agent automatically routes tool calls to appropriate servers
+    response = await agent.chat("Use tools from both servers")
+```
+
+### Multi-Server Features
+
+- **Automatic Tool Routing**: The agent automatically determines which server provides each tool
+- **Combined Tool List**: All tools from all servers are available in a single conversation
+- **Per-Server Tool Filtering**: Apply different tool filters to different servers
+- **Error Isolation**: If one server fails, others continue to work
+- **Mixed Transport Types**: Combine local, HTTP, and SSE servers in one agent
+
+### Example Multi-Server Script
+
+See `example_multi_server_usage.py` for a complete demonstration of multi-server functionality.
+
 ## Advanced Usage
 
 ### Multiple Conversations
 
 ```python
-async with Agent(server_spec="weather_mcp_server.py") as agent:
+async with Agent(server_specs="weather_mcp_server.py") as agent:
     # Multiple interactions with conversation history
     response1 = await agent.chat("What's the weather in London?")
     response2 = await agent.chat("What about Paris?")
@@ -296,7 +379,7 @@ async with Agent(server_spec="weather_mcp_server.py") as agent:
 
 ```python
 try:
-    async with Agent(server_spec="weather_mcp_server.py") as agent:
+    async with Agent(server_specs="weather_mcp_server.py") as agent:
         response = await agent.chat("What's the weather?")
 except Exception as e:
     print(f"Error: {e}")
@@ -306,7 +389,7 @@ except Exception as e:
 
 ```python
 # The Agent class uses a default system message, but you can modify it
-agent = Agent(server_spec="weather_mcp_server.py")
+agent = Agent(server_specs="weather_mcp_server.py")
 await agent.initialize()
 
 # Modify the system message
@@ -322,7 +405,7 @@ agent.messages[0] = {
 
 #### Constructor
 ```python
-Agent(server_config=None, server_spec=None, tools=None, inference_client=None)
+Agent(server_config=None, server_specs=None, tools=None, inference_client=None)
 ```
 
 **Parameters:**
@@ -384,6 +467,7 @@ parse_server_config(server_spec, tools_override=None)
 ## Examples
 
 - **`example_agent_usage.py`**: Comprehensive usage examples covering all patterns, including tool filtering, different initialization methods, and various usage scenarios.
+- **`example_multi_server_usage.py`**: Demonstrates multi-server functionality, showing how to connect to multiple MCP servers simultaneously and use tools from different servers.
 - **`example_remote_server.py`**: Complete guide to using remote MCP servers with different transport types, configuration options, and real-world examples.
 
 ## Requirements

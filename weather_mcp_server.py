@@ -104,7 +104,7 @@ if __name__ == "__main__":
         print("This server communicates via stdin/stdout.")
         print("Connect to it using an MCP client running as a subprocess.")
         print("\nExample usage from weather_agent.py:")
-        print('  Agent(server_spec="weather_mcp_server.py")')
+        print('  Agent(server_specs="weather_mcp_server.py")')
         
         # Using 'stdio' transport for local communication with a client running as a subprocess
         mcp.run(transport='stdio')
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         print(f"Server will be available at: http://{args.host}:{args.port}")
         print("Connect to it using a remote MCP client.")
         print(f"\nExample usage from weather_agent.py:")
-        print(f'  Agent(server_spec="remote:http://{args.host}:{args.port}")')
+        print(f'  Agent(server_specs="remote:http://{args.host}:{args.port}")')
         print("\nExample test commands:")
         print(f"  # Test the remote server")
         print(f"  python openai_mcp_agent.py --server remote:http://{args.host}:{args.port}")

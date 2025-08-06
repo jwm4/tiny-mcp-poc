@@ -1,201 +1,251 @@
 #!/usr/bin/env python3
-
-# This class was written by Cursor using Claude 4 Sonnet.
 """
-Example demonstrating the refactored Agent class usage.
+Comprehensive example demonstrating various ways to use the OpenAI MCP Agent.
 
-This script shows different ways to create and use the Agent class:
-1. Using constructor with server_spec
-2. Using constructor with server_config object
-3. Using factory method Agent.create()
-4. Using async context manager
-5. Using tool filtering
+This script shows:
+1. Basic agent usage with tool filtering
+2. Custom server configuration
+3. Different initialization patterns
+4. Error handling
+5. Conversation management
+6. Remote server usage examples
+
+Requirements:
+- Set OPENAI_API_KEY environment variable
+- Have weather_mcp_server.py available
+- Install dependencies: pip install openai mcp
+
+Usage:
+    python example_agent_usage.py
 """
 
 import asyncio
-from openai_mcp_agent import (
-    Agent,
-    LocalMCPServerConfig,
-    parse_server_config
-)
+import os
+from openai_mcp_agent import Agent, LocalMCPServerConfig, InferenceClient
 
-
-async def example_constructor_with_server_spec():
-    """Example 1: Using constructor with server specification"""
-    print("=" * 60)
-    print("Example 1: Constructor with server specification")
-    print("=" * 60)
+async def basic_usage_example():
+    """Demonstrate basic agent usage with tool filtering."""
+    
+    print("🤖 Basic Agent Usage Example")
+    print("=" * 50)
+    
+    # Create agent with specific tools only
+    agent = Agent(server_specs="weather_mcp_server.py[get_current_weather]")
     
     try:
-        # Create agent with server spec
-        agent = Agent(server_spec="weather_mcp_server.py[get_current_weather]")
-        
-        # Initialize the agent
         await agent.initialize()
         
-        # Use the agent
+        print("\nAsking about weather in San Francisco...")
+        response = await agent.chat("What's the weather like in San Francisco?")
+        print(f"Agent: {response}")
+        
+        print("\nAsking a general question...")
+        response = await agent.chat("What's the capital of France?")
+        print(f"Agent: {response}")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    finally:
+        await agent.cleanup()
+
+async def custom_config_example():
+    """Demonstrate custom server configuration."""
+    
+    print("\n🔧 Custom Configuration Example")
+    print("=" * 50)
+    
+    # Create custom server configuration
+    server_config = LocalMCPServerConfig(
+        script_path="weather_mcp_server.py",
+        command="python",
+        tools=["get_current_weather"]  # Only allow weather tool
+    )
+    
+    agent = Agent(server_configs=server_config)
+    
+    try:
+        await agent.initialize()
+        
+        print(f"Available tools: {agent.all_tool_names}")
+        
+        response = await agent.chat("Check the weather in New York")
+        print(f"Agent: {response}")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    finally:
+        await agent.cleanup()
+
+async def factory_method_example():
+    """Demonstrate using the factory method."""
+    
+    print("\n🏭 Factory Method Example")
+    print("=" * 50)
+    
+    # Use factory method with custom inference client
+    inference_client = InferenceClient(model="gpt-4o-mini")
+    
+    agent = await Agent.create(
+        server_specs="weather_mcp_server.py",
+        inference_client=inference_client
+    )
+    
+    if not agent:
+        print("❌ Failed to create agent")
+        return
+    
+    try:
+        print(f"Using model: {agent.inference_client.model}")
         response = await agent.chat("What's the weather in London?")
-        print(f"Response: {response}")
+        print(f"Agent: {response}")
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error: {e}")
+    
     finally:
-        if 'agent' in locals():
-            await agent.cleanup()
+        await agent.cleanup()
 
-
-async def example_constructor_with_config():
-    """Example 2: Using constructor with server config object"""
-    print("\n" + "=" * 60)
-    print("Example 2: Constructor with server config object")
-    print("=" * 60)
+async def context_manager_example():
+    """Demonstrate using agent as context manager."""
+    
+    print("\n🔄 Context Manager Example")
+    print("=" * 50)
     
     try:
-        # Create server config
-        server_config = LocalMCPServerConfig(
-            "weather_mcp_server.py", 
-            tools=["get_current_weather"]
-        )
-        
-        # Create agent with config
-        agent = Agent(server_config=server_config)
-        
-        # Initialize the agent
-        await agent.initialize()
-        
-        # Use the agent
-        response = await agent.chat("What's the weather in Paris?")
-        print(f"Response: {response}")
+        # Agent automatically initializes and cleans up
+        async with Agent(server_specs="weather_mcp_server.py") as agent:
+            print("Agent initialized automatically")
+            
+            # Multiple interactions in same conversation
+            response1 = await agent.chat("What's the weather in Tokyo?")
+            print(f"First query: {response1}")
+            
+            response2 = await agent.chat("How about in Paris?")
+            print(f"Second query: {response2}")
+            
+        print("Agent cleaned up automatically")
         
     except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        if 'agent' in locals():
-            await agent.cleanup()
+        print(f"❌ Error: {e}")
 
-
-async def example_factory_method():
-    """Example 3: Using Agent.create() factory method"""
-    print("\n" + "=" * 60)
-    print("Example 3: Using Agent.create() factory method")
-    print("=" * 60)
+async def tool_filtering_example():
+    """Demonstrate different tool filtering approaches."""
+    
+    print("\n🔧 Tool Filtering Example")
+    print("=" * 50)
     
     try:
-        # Create and initialize agent in one step
-        agent = await Agent.create(
-            server_spec="weather_mcp_server.py",
-            tools=["get_current_weather"]
-        )
-        
-        if agent:
-            # Use the agent
-            response = await agent.chat("What's the weather in Tokyo?")
+        # Method 1: Filter in server spec
+        async with Agent(server_specs="weather_mcp_server.py", tools=["get_current_weather"]) as agent:
+            print(f"Filtered tools: {agent.all_tool_names}")
+            response = await agent.chat("Check weather in Miami")
             print(f"Response: {response}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+async def error_handling_example():
+    """Demonstrate error handling patterns."""
+    
+    print("\n⚠️ Error Handling Example")
+    print("=" * 50)
+    
+    # Try to connect to non-existent server
+    try:
+        agent = Agent(server_specs="nonexistent_server.py")
+        success = await agent.initialize()
+        
+        if not success:
+            print("❌ Failed to initialize agent with non-existent server")
         else:
-            print("Failed to create agent")
+            await agent.cleanup()
             
     except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        if 'agent' in locals() and agent:
-            await agent.cleanup()
-
-
-async def example_async_context_manager():
-    """Example 4: Using async context manager"""
-    print("\n" + "=" * 60)
-    print("Example 4: Using async context manager")
-    print("=" * 60)
+        print(f"❌ Expected error: {e}")
     
+    # Try with invalid server spec
     try:
-        # Use agent with async context manager (automatic cleanup)
-        async with Agent(server_spec="weather_mcp_server.py") as agent:
-            response = await agent.chat("What's the weather in New York?")
-            print(f"Response: {response}")
-        # Agent is automatically cleaned up here
-        
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-async def example_tool_filtering():
-    """Example 5: Using tool filtering"""
-    print("\n" + "=" * 60)
-    print("Example 5: Tool filtering")
-    print("=" * 60)
-    
-    try:
-        # Create agent with specific tools
-        agent = Agent(
-            server_spec="weather_mcp_server.py",
-            tools=["get_current_weather"]  # Only this tool will be available
-        )
-        
+        agent = Agent(server_specs="invalid:spec:format")
         await agent.initialize()
         
-        response = await agent.chat("What's the weather in Sydney?")
-        print(f"Response: {response}")
-        
     except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        if 'agent' in locals():
-            await agent.cleanup()
+        print(f"❌ Expected error with invalid spec: {e}")
 
-
-async def example_multiple_messages():
-    """Example 6: Multiple messages with same agent"""
-    print("\n" + "=" * 60)
-    print("Example 6: Multiple messages with same agent")
-    print("=" * 60)
+async def conversation_example():
+    """Demonstrate multi-turn conversation."""
+    
+    print("\n💬 Conversation Example")
+    print("=" * 50)
     
     try:
-        async with Agent(server_spec="weather_mcp_server.py") as agent:
-            # Multiple interactions with the same agent
-            cities = ["Berlin", "Madrid", "Rome"]
+        async with Agent(server_specs="weather_mcp_server.py") as agent:
             
-            for city in cities:
-                response = await agent.chat(f"What's the weather in {city}?")
-                print(f"{city}: {response[:100]}...")  # Truncate for readability
+            # Simulate a conversation
+            queries = [
+                "What's the weather in Seattle?",
+                "How about the temperature?",
+                "Is it good weather for hiking?",
+            ]
+            
+            for i, query in enumerate(queries, 1):
+                print(f"\nTurn {i}: {query}")
+                response = await agent.chat(query)
+                print(f"Agent: {response}")
                 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error: {e}")
 
-
-async def example_single_message_function():
-    """Example 7: Using Agent for single messages"""
-    print("\n" + "=" * 60)
-    print("Example 7: Agent for single messages")
-    print("=" * 60)
+def check_requirements():
+    """Check if required environment variables and dependencies are available."""
+    
+    if not os.getenv("OPENAI_API_KEY"):
+        print("⚠️ Warning: OPENAI_API_KEY not set")
+        print("Set it with: export OPENAI_API_KEY='your-key-here'")
+        return False
     
     try:
-        # For one-off messages, use the Agent with context manager
-        async with Agent(server_spec="weather_mcp_server.py", tools=["get_current_weather"]) as agent:
-            response = await agent.chat("What's the weather in Mumbai?")
-            print(f"Response: {response}")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-
+        import openai
+        import mcp
+        print("✅ Required dependencies found")
+        return True
+    except ImportError as e:
+        print(f"❌ Missing dependency: {e}")
+        print("Install with: pip install openai mcp")
+        return False
 
 async def main():
-    """Run all examples"""
-    print("Agent Class Usage Examples")
-    print("Note: These examples require weather_mcp_server.py to be available")
-    print()
+    """Run all examples."""
     
-    await example_constructor_with_server_spec()
-    await example_constructor_with_config()
-    await example_factory_method()
-    await example_async_context_manager()
-    await example_tool_filtering()
-    await example_multiple_messages()
-    await example_single_message_function()
-    
-    print("\n" + "=" * 60)
-    print("All examples completed!")
+    print("🚀 OpenAI MCP Agent - Comprehensive Examples")
     print("=" * 60)
-
+    
+    if not check_requirements():
+        print("\n❌ Requirements not met. Please fix the above issues.")
+        return
+    
+    # Run all examples
+    examples = [
+        basic_usage_example,
+        custom_config_example, 
+        factory_method_example,
+        context_manager_example,
+        tool_filtering_example,
+        error_handling_example,
+        conversation_example,
+    ]
+    
+    for example in examples:
+        try:
+            await example()
+            print("\n" + "─" * 60)
+            
+        except Exception as e:
+            print(f"❌ Example failed: {e}")
+            print("─" * 60)
+    
+    print("\n✅ All examples completed!")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

@@ -1,207 +1,235 @@
 #!/usr/bin/env python3
 """
-Example demonstrating remote MCP server support in the OpenAI MCP Agent.
+Example demonstrating remote MCP server usage with the OpenAI MCP Agent.
 
-This script shows how to connect to remote MCP servers using different transport types:
-1. HTTP transport for standard HTTP-based MCP servers
-2. SSE (Server-Sent Events) transport for real-time connections
-3. Configuration parsing for different URL formats
+This script shows how to:
+1. Connect to remote MCP servers via HTTP and SSE
+2. Use different transport types
+3. Handle remote server configurations
+4. Apply tool filtering with remote servers
+
+Requirements:
+- Set OPENAI_API_KEY environment variable
+- Have a remote MCP server running (e.g., weather_mcp_server.py --transport sse)
+- Install dependencies: pip install openai mcp httpx
+
+Usage:
+    # Start a remote server first:
+    python weather_mcp_server.py --transport sse --port 8000
+    
+    # Then run this example:
+    python example_remote_server.py
 """
 
 import asyncio
-from openai_mcp_agent import (
-    Agent,
-    RemoteMCPServerConfig,
-    parse_server_config
-)
+from openai_mcp_agent import Agent, RemoteMCPServerConfig, InferenceClient
 
-
-async def example_http_remote_server():
-    """Example 1: Connecting to HTTP remote MCP server"""
-    print("=" * 60)
-    print("Example 1: HTTP Remote MCP Server")
-    print("=" * 60)
+async def example_http_server():
+    """Example connecting to HTTP-based remote MCP server."""
+    
+    print("🌐 HTTP Remote Server Example")
+    print("=" * 50)
+    
+    # Create remote server configuration
+    config = RemoteMCPServerConfig(
+        url="http://localhost:8000",
+        transport_type="sse",  # Use SSE transport
+        tools=["get_current_weather"]  # Filter to specific tools
+    )
+    
+    agent = Agent(server_configs=config)
     
     try:
-        # Create remote server config for HTTP transport
-        config = RemoteMCPServerConfig(
-            "http://localhost:8000",
-            transport_type="sse",  # Use SSE for real-time communication
-            tools=["get_weather"]  # Optional: filter tools
-        )
+        await agent.initialize()
+        print(f"Connected to remote server at {config.url}")
+        print(f"Available tools: {agent.all_tool_names}")
         
-        # Create agent with remote server
-        agent = Agent(server_config=config)
-        print(f"✓ Agent created for HTTP remote server")
-        print(f"  Server: {config.url}")
-        print(f"  Transport: {config.transport_type}")
-        print(f"  Tools: {config.tools}")
-        
-        # Note: We won't actually initialize since we don't have a real server
-        print("  (Not initializing - no real server available)")
+        response = await agent.chat("What's the weather in San Francisco?")
+        print(f"Response: {response}")
         
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"❌ Error: {e}")
+        print("Make sure the remote server is running:")
+        print("python weather_mcp_server.py --transport sse --port 8000")
+    
+    finally:
+        await agent.cleanup()
 
-
-async def example_sse_remote_server():
-    """Example 2: Connecting to SSE remote MCP server"""
-    print("\n" + "=" * 60)
-    print("Example 2: SSE Remote MCP Server")
-    print("=" * 60)
+async def example_sse_server():
+    """Example connecting to SSE-based remote MCP server."""
+    
+    print("\n📡 SSE Remote Server Example")
+    print("=" * 50)
+    
+    # Create remote server configuration for SSE
+    config = RemoteMCPServerConfig(
+        url="http://localhost:8000/sse",  # Explicit SSE endpoint
+        transport_type="sse"
+    )
+    
+    agent = Agent(server_configs=config)
     
     try:
-        # Create remote server config for SSE transport
-        config = RemoteMCPServerConfig(
-            "https://api.example.com/mcp/sse",
-            transport_type="sse"
-        )
+        await agent.initialize()
+        print(f"Connected via SSE to {config.url}")
+        print(f"Available tools: {agent.all_tool_names}")
         
-        # Create agent with remote server
-        agent = Agent(server_config=config)
-        print(f"✓ Agent created for SSE remote server")
-        print(f"  Server: {config.url}")
-        print(f"  Transport: {config.transport_type}")
-        
-        # Note: We won't actually initialize since we don't have a real server
-        print("  (Not initializing - no real server available)")
+        response = await agent.chat("Check the weather in London")
+        print(f"Response: {response}")
         
     except Exception as e:
-        print(f"✗ Error: {e}")
-
-
-async def example_remote_server_parsing():
-    """Example 3: Remote server configuration parsing"""
-    print("\n" + "=" * 60)
-    print("Example 3: Remote Server Configuration Parsing")
-    print("=" * 60)
+        print(f"❌ Error: {e}")
+        print("Make sure the remote server is running with SSE transport")
     
-    test_specs = [
-        "remote:http://localhost:8000",
-        "remote:https://api.example.com/mcp",
-        "remote:http://localhost:8000/sse",
-        "remote:ws://localhost:8000",  # WebSocket (not supported yet)
-        "remote:http://localhost:3000[get_weather,get_forecast]",
-    ]
+    finally:
+        await agent.cleanup()
+
+async def example_server_specs():
+    """Example using server specification strings for remote servers."""
     
-    for spec in test_specs:
-        try:
-            config = parse_server_config(spec)
-            print(f"✓ '{spec}'")
-            print(f"  Type: {type(config).__name__}")
-            print(f"  URL: {getattr(config, 'url', 'N/A')}")
-            print(f"  Transport: {getattr(config, 'transport_type', 'N/A')}")
-            print(f"  Tools: {getattr(config, 'tools', 'All tools')}")
-            print()
-        except Exception as e:
-            print(f"✗ '{spec}': {e}")
-            print()
-
-
-async def example_remote_server_with_context_manager():
-    """Example 4: Using remote server with context manager"""
-    print("\n" + "=" * 60)
-    print("Example 4: Remote Server with Context Manager")
-    print("=" * 60)
+    print("\n🔧 Server Specs Example")
+    print("=" * 50)
     
     try:
-        # This would be the typical usage pattern
-        print("Typical usage pattern:")
-        print("""
-async with Agent(server_spec="remote:http://localhost:8000") as agent:
-    response = await agent.chat("What tools do you have?")
-    print(response)
-        """)
+        # Simple remote server spec
+        async with Agent(server_specs="remote:http://localhost:8000") as agent:
+            print("Connected using server spec string")
+            response = await agent.chat("What's the weather in Tokyo?")
+            print(f"Response: {response}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+async def example_custom_inference_client():
+    """Example using custom inference client with remote server."""
+    
+    print("\n🤖 Custom Inference Client Example")
+    print("=" * 50)
+    
+    # Use faster/cheaper model for testing
+    inference_client = InferenceClient(model="gpt-4o-mini")
+    
+    agent = Agent(server_specs="remote:http://localhost:8000")
+    
+    try:
+        await agent.initialize()
+        print(f"Using model: {agent.inference_client.model}")
         
-        # Create agent without actually connecting
-        agent = Agent(server_spec="remote:http://localhost:8000")
-        print(f"✓ Agent created for remote server")
-        url = getattr(agent.server_config, 'url', 'N/A')
-        transport = getattr(agent.server_config, 'transport_type', 'N/A')
-        print(f"  Would connect to: {url}")
-        print(f"  Using transport: {transport}")
+        response = await agent.chat("Brief weather update for Paris")
+        print(f"Response: {response}")
         
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"❌ Error: {e}")
+    
+    finally:
+        await agent.cleanup()
 
-
-async def example_remote_server_tool_filtering():
-    """Example 5: Remote server with tool filtering"""
-    print("\n" + "=" * 60)
-    print("Example 5: Remote Server with Tool Filtering")
-    print("=" * 60)
+async def example_tool_filtering():
+    """Example demonstrating tool filtering with remote servers."""
+    
+    print("\n🔍 Tool Filtering Example")
+    print("=" * 50)
     
     try:
-        # Method 1: Using server spec with embedded tools
-        agent1 = Agent(server_spec="remote:http://localhost:8000[get_weather,get_forecast]")
-        print(f"✓ Agent with embedded tools: {agent1.server_config.tools}")
+        # Method 1: Filter in server spec
+        agent1 = Agent(server_specs="remote:http://localhost:8000[get_weather,get_forecast]")
         
-        # Method 2: Using separate tools parameter
+        # Method 2: Filter via tools parameter
         agent2 = Agent(
-            server_spec="remote:http://localhost:8000",
-            tools=["get_weather", "get_forecast"]
+            server_specs="remote:http://localhost:8000",
+            tools=["get_current_weather"]
         )
-        print(f"✓ Agent with separate tools: {agent2.server_config.tools}")
         
-        # Method 3: Using RemoteMCPServerConfig directly
+        # Method 3: Filter via config object
         config = RemoteMCPServerConfig(
-            "http://localhost:8000",
-            tools=["get_weather", "get_forecast"]
+            url="http://localhost:8000",
+            tools=["get_current_weather"]
         )
-        agent3 = Agent(server_config=config)
-        print(f"✓ Agent with config tools: {agent3.server_config.tools}")
+        agent3 = Agent(server_configs=config)
+        
+        print("Created agents with different tool filtering approaches")
+        print("(Not connecting to avoid multiple connections)")
         
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"❌ Error: {e}")
 
-
-async def example_command_line_usage():
-    """Example 6: Command line usage for remote servers"""
-    print("\n" + "=" * 60)
-    print("Example 6: Command Line Usage")
-    print("=" * 60)
+async def example_error_handling():
+    """Example demonstrating error handling with remote servers."""
     
-    print("Command line examples for remote servers:")
-    print()
-    print("# Basic remote server connection")
-    print("python openai_mcp_agent.py --server remote:http://localhost:8000")
-    print()
-    print("# Remote server with HTTPS")
-    print("python openai_mcp_agent.py --server remote:https://api.example.com/mcp")
-    print()
-    print("# Remote server with SSE endpoint")
-    print("python openai_mcp_agent.py --server remote:http://localhost:8000/sse")
-    print()
-    print("# Remote server with tool filtering")
-    print("python openai_mcp_agent.py --server remote:http://localhost:8000 --tools get_weather")
-    print()
-    print("# Remote server with embedded tools")
-    print("python openai_mcp_agent.py --server 'remote:http://localhost:8000[get_weather,get_forecast]'")
+    print("\n⚠️ Error Handling Example")
+    print("=" * 50)
+    
+    # Try connecting to non-existent server
+    try:
+        agent = Agent(server_specs="remote:http://localhost:9999")
+        await agent.initialize()
+        
+    except Exception as e:
+        print(f"❌ Expected error connecting to non-existent server: {e}")
+    
+    # Try invalid URL format
+    try:
+        agent = Agent(server_specs="remote:invalid-url")
+        await agent.initialize()
+        
+    except Exception as e:
+        print(f"❌ Expected error with invalid URL: {e}")
 
+def print_setup_instructions():
+    """Print instructions for setting up remote server."""
+    
+    print("🚀 Remote MCP Server Setup Instructions")
+    print("=" * 60)
+    print()
+    print("To run these examples, you need a remote MCP server running.")
+    print("Here's how to start one:")
+    print()
+    print("1. Start the weather MCP server in SSE mode:")
+    print("   python weather_mcp_server.py --transport sse --port 8000")
+    print()
+    print("2. The server will be available at:")
+    print("   - HTTP: http://localhost:8000")
+    print("   - SSE:  http://localhost:8000/sse")
+    print()
+    print("3. Then run this example script:")
+    print("   python example_remote_server.py")
+    print()
+    print("Note: Make sure OPENAI_API_KEY is set in your environment")
+    print("=" * 60)
 
 async def main():
-    """Run all examples"""
-    print("OpenAI MCP Agent - Remote Server Examples")
-    print("Note: These examples demonstrate configuration but don't connect to real servers")
-    print()
+    """Run all remote server examples."""
     
-    await example_http_remote_server()
-    await example_sse_remote_server()
-    await example_remote_server_parsing()
-    await example_remote_server_with_context_manager()
-    await example_remote_server_tool_filtering()
-    await example_command_line_usage()
+    print_setup_instructions()
     
     print("\n" + "=" * 60)
-    print("All examples completed!")
+    print("Running Remote Server Examples")
     print("=" * 60)
-    print()
-    print("To test with a real remote server, you would need to:")
-    print("1. Set up an MCP server that supports HTTP/SSE transport")
-    print("2. Use one of the MCP server proxy tools (like mcp-streamablehttp-proxy)")
-    print("3. Replace the example URLs with your actual server URLs")
-    print("4. Remove the initialization skip logic in the examples")
-
+    
+    # Note: These examples assume a remote server is running
+    # If no server is available, they will show connection errors
+    
+    examples = [
+        example_http_server,
+        example_sse_server,
+        example_server_specs,
+        example_custom_inference_client,
+        example_tool_filtering,
+        example_error_handling,
+    ]
+    
+    for example in examples:
+        try:
+            await example()
+            print("\n" + "─" * 50)
+            
+        except Exception as e:
+            print(f"❌ Example failed: {e}")
+            print("─" * 50)
+    
+    print("\n✅ All remote server examples completed!")
+    print("\nNote: Connection errors are expected if no remote server is running.")
+    print("Start a remote server to see successful connections.")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

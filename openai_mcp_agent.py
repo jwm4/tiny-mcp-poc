@@ -3,8 +3,10 @@ import json
 import os
 import asyncio
 import argparse
+import logging
 from urllib.parse import urlparse
 from openai import OpenAI
+from typing import NamedTuple, List, Optional, Dict, Any
 
 # Import MCP client libraries
 from mcp import StdioServerParameters
@@ -14,6 +16,21 @@ from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client  # type: ignore
 from mcp.client.streamable_http import streamablehttp_client  # type: ignore
 import httpx
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+def setup_logging(level=logging.INFO):
+    """Configure logging for the application."""
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger.setLevel(level)
+
+# Initialize logging with default level
+setup_logging()
 
 # This class was written by Google Gemini but then massively rewritten over and over by
 # Cursor using Claude 4 Sonnet after numerous change requests.
@@ -27,7 +44,16 @@ if not OPENAI_API_KEY:
 DEFAULT_MODEL = "gpt-4o"
 
 
-# --- 2. Inference Client Class ---
+# --- 2. Server Information Structure ---
+class ServerInfo(NamedTuple):
+    """Information about a connected MCP server."""
+    config: 'MCPServerConfig'
+    session: ClientSession
+    tools: List[Dict[str, Any]]
+    tool_names: List[str]  # Quick lookup for tool names
+
+
+# --- 3. Inference Client Class ---
 class InferenceClient:
     """Client for making inference requests to OpenAI-compatible APIs."""
     
@@ -48,11 +74,10 @@ class InferenceClient:
             raise ValueError("API key must be provided either as parameter or OPENAI_API_KEY environment variable.")
         
         # Initialize OpenAI client with optional base_url for compatibility with other providers
-        client_params = {"api_key": self.api_key}
         if self.base_url:
-            client_params["base_url"] = self.base_url
-            
-        self.client = OpenAI(**client_params)
+            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        else:
+            self.client = OpenAI(api_key=self.api_key)
     
     def create_response(self, input_data, tools=None, previous_response_id=None, instructions=None, model=None):
         """
@@ -90,7 +115,7 @@ class InferenceClient:
             response = self.client.responses.create(**params)
             return response
         except Exception as e:
-            print(f"Error calling Responses API: {e}")
+            logger.error(f"Error calling Responses API: {e}")
             return None
     
     def __repr__(self):
@@ -195,7 +220,7 @@ def process_responses_api_output(response):
                 else:
                     function_args = output_item.arguments
             except json.JSONDecodeError:
-                print(f"Warning: Could not parse tool arguments: {output_item.arguments}")
+                logger.warning(f"Warning: Could not parse tool arguments: {output_item.arguments}")
                 function_args = output_item.arguments
             
             tool_calls.append({
@@ -298,7 +323,7 @@ def parse_server_config(server_spec, tools_override=None):
     # Parse tools override if provided
     if tools_override:
         tools = [tool.strip() for tool in tools_override.split(',') if tool.strip()]
-        print(f"Overriding tools with command line specification: {tools}")
+        logger.info(f"Overriding tools with command line specification: {tools}")
     
     # Handle simple path (default to local)
     if ":" not in server_spec or (server_spec.count(":") == 1 and not server_spec.startswith(("local:", "remote:"))):
@@ -329,9 +354,136 @@ def parse_server_config(server_spec, tools_override=None):
 
 
 # --- 5. MCP Client Setup ---
+async def setup_mcp_clients(server_configs=None):
+    """
+    Sets up MCP client sessions to connect to multiple servers.
+    
+    Args:
+        server_configs (List[MCPServerConfig]): List of server configuration objects
+    
+    Returns:
+        tuple: (server_infos, exit_stack) or ([], None) on error
+        where server_infos is a List[ServerInfo]
+    """
+    if server_configs is None:
+        server_configs = [LocalMCPServerConfig("weather_mcp_server.py")]
+    
+    if not isinstance(server_configs, list):
+        server_configs = [server_configs]
+    
+    exit_stack = AsyncExitStack()
+    server_infos = []
+    
+    try:
+        for server_config in server_configs:
+            try:
+                if isinstance(server_config, LocalMCPServerConfig):
+                    # Handle local MCP server
+                    server_params = StdioServerParameters(
+                        command=server_config.command,
+                        args=[server_config.script_path] + server_config.args,
+                        env=os.environ.copy()  # Pass current environment to subprocess
+                    )
+
+                    read_stream, write_stream = await exit_stack.enter_async_context(
+                        stdio_client(server_params)
+                    )
+                    
+                    logger.info(f"Connecting to local MCP server: {server_config.script_path}")
+
+                elif isinstance(server_config, RemoteMCPServerConfig):
+                    # Handle remote MCP server
+                    logger.info(f"Connecting to remote MCP server: {server_config.url} (transport: {server_config.transport_type})")
+                    
+                    if server_config.transport_type == "sse":
+                        # Use SSE client to connect to remote server
+                        sse_url = server_config.url
+                        if not sse_url.endswith('/sse'):
+                            sse_url = sse_url.rstrip('/') + '/sse'
+                        
+                        read_stream, write_stream = await exit_stack.enter_async_context(
+                            sse_client(sse_url)
+                        )
+                        logger.info("Connected to remote MCP server via SSE")
+                        
+                    elif server_config.transport_type == "websocket":
+                        # WebSocket support is not available in the MCP library
+                        logger.warning("WebSocket transport is not supported by the MCP library")
+                        logger.warning("Please use HTTP or SSE transport instead")
+                        continue  # Skip this server instead of failing all
+                        
+                    else:  # HTTP transport
+                        # Use streamable HTTP client
+                        async_gen = streamablehttp_client(server_config.url)
+                        read_stream, write_stream, get_session_id = await exit_stack.enter_async_context(
+                            async_gen
+                        )
+                        logger.info("Connected to remote MCP server via HTTP")
+                
+                else:
+                    logger.warning(f"Unsupported server configuration type: {type(server_config)}")
+                    continue
+
+                # Create an MCP session using the streams
+                session = await exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
+
+                # Initialize the MCP session before making any requests
+                await session.initialize()
+
+                logger.info(f"Discovering tools from MCP server ({server_config})...")
+                server_tools_response = await session.list_tools()
+                
+                # Apply tool filtering if specified in server config
+                tool_filter = getattr(server_config, 'tools', None)
+                mcp_tools = process_mcp_tools_response(server_tools_response, tool_filter)
+                
+                # Log available vs selected tools
+                all_tool_names = [tool.name for tool in server_tools_response.tools]
+                selected_tool_names = [t['name'] for t in mcp_tools]
+                
+                logger.info(f"Available tools from server: {all_tool_names}")
+                if tool_filter:
+                    logger.info(f"Using filtered tools: {selected_tool_names}")
+                    # Check for invalid tool names
+                    invalid_tools = [t for t in tool_filter if t not in all_tool_names]
+                    if invalid_tools:
+                        logger.warning(f"Warning: Requested tools not found on server: {invalid_tools}")
+                else:
+                    logger.info(f"Using all available tools: {selected_tool_names}")
+
+                # Create ServerInfo for this server
+                server_info = ServerInfo(
+                    config=server_config,
+                    session=session,
+                    tools=mcp_tools,
+                    tool_names=selected_tool_names
+                )
+                server_infos.append(server_info)
+                
+            except Exception as e:
+                logger.error(f"Error setting up MCP client for server {server_config}: {e}")
+                continue  # Continue with other servers
+        
+        if not server_infos:
+            logger.warning("No servers were successfully connected")
+            await exit_stack.aclose()
+            return [], None
+            
+        return server_infos, exit_stack
+        
+    except Exception as e:
+        logger.error(f"Error setting up MCP clients: {e}")
+        await exit_stack.aclose()
+        return [], None
+
+
+# Keep the old function for backward compatibility
 async def setup_mcp_client(server_config=None):
     """
     Sets up an MCP client session to connect to a server.
+    Deprecated: Use setup_mcp_clients for multiple server support.
     
     Args:
         server_config (MCPServerConfig): Server configuration object
@@ -339,91 +491,11 @@ async def setup_mcp_client(server_config=None):
     Returns:
         tuple: (session, tools, exit_stack) or (None, [], None) on error
     """
-    if server_config is None:
-        server_config = LocalMCPServerConfig("weather_mcp_server.py")
-    
-    exit_stack = AsyncExitStack()
-    try:
-        if isinstance(server_config, LocalMCPServerConfig):
-            # Handle local MCP server
-            server_params = StdioServerParameters(
-                command=server_config.command,
-                args=[server_config.script_path] + server_config.args
-            )
-
-            read_stream, write_stream = await exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            
-            print(f"Connecting to local MCP server: {server_config.script_path}")
-
-        elif isinstance(server_config, RemoteMCPServerConfig):
-            # Handle remote MCP server
-            print(f"Connecting to remote MCP server: {server_config.url} (transport: {server_config.transport_type})")
-            
-            if server_config.transport_type == "sse":
-                # Use SSE client to connect to remote server
-                sse_url = server_config.url
-                if not sse_url.endswith('/sse'):
-                    sse_url = sse_url.rstrip('/') + '/sse'
-                
-                read_stream, write_stream = await exit_stack.enter_async_context(
-                    sse_client(sse_url)
-                )
-                print("Connected to remote MCP server via SSE")
-                
-            elif server_config.transport_type == "websocket":
-                # WebSocket support is not available in the MCP library
-                print("WebSocket transport is not supported by the MCP library")
-                print("Please use HTTP or SSE transport instead")
-                await exit_stack.aclose()
-                return None, [], None
-                
-            else:  # HTTP transport
-                # Use streamable HTTP client
-                async_gen = streamablehttp_client(server_config.url)
-                read_stream, write_stream, get_session_id = await exit_stack.enter_async_context(
-                    async_gen
-                )
-                print("Connected to remote MCP server via HTTP")
-        
-        else:
-            raise ValueError(f"Unsupported server configuration type: {type(server_config)}")
-
-        # Create an MCP session using the streams
-        session = await exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-
-        # Initialize the MCP session before making any requests
-        await session.initialize()
-
-        print("Discovering tools from MCP server...")
-        server_tools_response = await session.list_tools()
-        
-        # Apply tool filtering if specified in server config
-        tool_filter = getattr(server_config, 'tools', None)
-        mcp_tools = process_mcp_tools_response(server_tools_response, tool_filter)
-        
-        # Log available vs selected tools
-        all_tool_names = [tool.name for tool in server_tools_response.tools]
-        selected_tool_names = [t['name'] for t in mcp_tools]
-        
-        print(f"Available tools from server: {all_tool_names}")
-        if tool_filter:
-            print(f"Using filtered tools: {selected_tool_names}")
-            # Check for invalid tool names
-            invalid_tools = [t for t in tool_filter if t not in all_tool_names]
-            if invalid_tools:
-                print(f"Warning: Requested tools not found on server: {invalid_tools}")
-        else:
-            print(f"Using all available tools: {selected_tool_names}")
-
-        return session, mcp_tools, exit_stack
-    except Exception as e:
-        print(f"Error setting up MCP client: {e}")
-        await exit_stack.aclose()
-        return None, [], None
+    server_infos, exit_stack = await setup_mcp_clients([server_config] if server_config else None)
+    if server_infos:
+        server_info = server_infos[0]
+        return server_info.session, server_info.tools, exit_stack
+    return None, [], None
 
 
 # --- 6. Deprecated - Removed call_responses_api function
@@ -434,102 +506,95 @@ async def setup_mcp_client(server_config=None):
 async def execute_mcp_tool(mcp_session, function_name, function_args):
     """Execute an MCP tool and return the result."""
     try:
-        print(f"Calling MCP tool: {function_name} with args: {function_args}")
+        logger.info(f"Calling MCP tool: {function_name} with args: {function_args}")
         tool_output_obj = await mcp_session.call_tool(
             name=function_name, arguments=function_args
         )
         tool_output = extract_mcp_tool_result(tool_output_obj)
-        print(f"MCP tool output: {tool_output}")
+        logger.info(f"MCP tool output: {tool_output}")
         return tool_output
     except Exception as e:
-        print(f"Error executing MCP tool '{function_name}': {e}")
+        logger.error(f"Error executing MCP tool '{function_name}': {e}")
         raise
 
 
-async def process_tool_calls_responses_api(tool_calls, mcp_session, tools_for_llm, previous_response_id, inference_client):
-    """Process tool calls for Responses API and return tool outputs."""
-    tool_outputs = []
-    
-    for tool_call_info in tool_calls:
-        function_name = tool_call_info["function_name"]
-        function_args = tool_call_info["function_args"]
-        tool_call_id = tool_call_info["id"]
-
-        # Check if this is an MCP tool
-        if function_name in [t["name"] for t in tools_for_llm]:
-            try:
-                tool_output = await execute_mcp_tool(
-                    mcp_session, function_name, function_args
-                )
-                tool_response = build_tool_response_input(tool_call_id, tool_output)
-                tool_outputs.append(tool_response)
-            except Exception as e:
-                error_output = build_tool_response_input(
-                    tool_call_id, f"Error executing tool '{function_name}': {e}"
-                )
-                tool_outputs.append(error_output)
-        else:
-            print(f"Agent: Error - Unknown tool requested by LLM: {function_name}")
-            error_output = build_tool_response_input(tool_call_id, "Unknown tool")
-            tool_outputs.append(error_output)
-    
-    # Make a follow-up call to the Responses API with tool outputs
-    if tool_outputs:
-        response = inference_client.create_response(
-            input_data=tool_outputs,
-            tools=tools_for_llm,
-            previous_response_id=previous_response_id
-        )
-        if response:
-            assistant_message, _ = process_responses_api_output(response)
-            return assistant_message, response.id
-    
-    return "No response after tool execution.", None
+# This function has been replaced by _process_tool_calls_and_get_response in the Agent class
 
 
 # --- 8. Agent Class ---
 class Agent:
     """OpenAI MCP Agent - AI assistant with configurable MCP server support using Responses API."""
 
-    def __init__(self, server_config=None, server_spec=None, tools=None, inference_client=None):
+    def __init__(self, server_configs=None, server_specs=None, tools=None, inference_client=None):
         """
-        Initialize the Agent with server configuration.
+        Initialize the Agent with server configurations.
 
         Args:
-            server_config (MCPServerConfig): Server configuration object
-            server_spec (str): Server specification string (alternative to server_config)
-            tools (list): List of tool names to use (overrides tools in config)
+            server_configs (List[MCPServerConfig] or MCPServerConfig): Server configuration objects
+            server_specs (List[str] or str): Server specification strings (alternative to server_configs)
+            tools (list): List of tool names to use (overrides tools in all configs)
             inference_client (InferenceClient, optional): Inference client to use for API calls
         """
-        # Parse server configuration
-        if server_config is None and server_spec is not None:
-            server_config = parse_server_config(server_spec)
+        # Parse server configurations
+        if server_configs is None and server_specs is not None:
+            if isinstance(server_specs, str):
+                server_specs = [server_specs]
+            server_configs = [parse_server_config(spec) for spec in server_specs]
         
-        if server_config is None:
-            server_config = LocalMCPServerConfig("weather_mcp_server.py")
+        if server_configs is None:
+            server_configs = [LocalMCPServerConfig("weather_mcp_server.py")]
         
-        # Override tools if specified
+        # Ensure server_configs is a list
+        if not isinstance(server_configs, list):
+            server_configs = [server_configs]
+        
+        # Override tools if specified (applies to all servers)
         if tools is not None:
-            server_config.tools = tools
+            for config in server_configs:
+                config.tools = tools
         
-        self.server_config = server_config
+        self.server_configs = server_configs
         self.inference_client = inference_client or get_default_client()
-        self.mcp_session = None
-        self.tools_for_llm = []
+        self.server_infos: List[ServerInfo] = []
         self.exit_stack = None
         self.last_response_id = None
         self.instructions = "You are a helpful AI assistant. You can answer general questions and use available tools to help users."
         self.is_initialized = False
 
+    @property
+    def all_tools(self) -> List[Dict[str, Any]]:
+        """Get all tools from all connected servers."""
+        tools = []
+        for server_info in self.server_infos:
+            tools.extend(server_info.tools)
+        return tools
+
+    @property
+    def all_tool_names(self) -> List[str]:
+        """Get all tool names from all connected servers."""
+        names = []
+        for server_info in self.server_infos:
+            names.extend(server_info.tool_names)
+        return names
+
+    def find_server_for_tool(self, tool_name: str) -> Optional[ServerInfo]:
+        """Find which server provides a specific tool."""
+        for server_info in self.server_infos:
+            if tool_name in server_info.tool_names:
+                return server_info
+        return None
+
     async def initialize(self):
-        """Initialize the agent with MCP client and tools."""
+        """Initialize the agent with MCP clients and tools."""
         if self.is_initialized:
             return True
 
-        self.mcp_session, self.tools_for_llm, self.exit_stack = await setup_mcp_client(self.server_config)
-        if not self.mcp_session:
+        self.server_infos, self.exit_stack = await setup_mcp_clients(self.server_configs)
+        if not self.server_infos:
             return False
 
+        logger.info(f"Agent initialized with {len(self.server_infos)} server(s)")
+        logger.info(f"Total available tools: {self.all_tool_names}")
         self.is_initialized = True
         return True
 
@@ -554,7 +619,7 @@ class Agent:
         # Get response from Responses API
         response = self.inference_client.create_response(
             input_data=[input_data],
-            tools=self.tools_for_llm,
+            tools=self.all_tools, # Use all_tools here
             previous_response_id=self.last_response_id,
             instructions=self.instructions
         )
@@ -565,19 +630,89 @@ class Agent:
         # Update last response ID for conversation continuity
         self.last_response_id = response.id
 
-        # Process the response
-        assistant_message, tool_calls = process_responses_api_output(response)
+        # Loop to handle multiple rounds of tool calls
+        max_iterations = 10  # Prevent infinite loops
+        iteration = 0
+        
+        while iteration < max_iterations:
+            # Process the response
+            assistant_message, tool_calls = process_responses_api_output(response)
 
-        if tool_calls:
-            # Process tool calls and get final response
-            final_response, new_response_id = await process_tool_calls_responses_api(
-                tool_calls, self.mcp_session, self.tools_for_llm, self.last_response_id, self.inference_client
+            if tool_calls:
+                logger.debug(f"Iteration {iteration}: Processing {len(tool_calls)} tool calls")
+                # Process tool calls and get the next response
+                response = await self._process_tool_calls_and_get_response(
+                    tool_calls, self.last_response_id
+                )
+                
+                if not response:
+                    return "Error processing tool calls."
+                
+                # Update response ID
+                self.last_response_id = response.id
+                iteration += 1
+            else:
+                # No tool calls, return the assistant message
+                return assistant_message or "No content in response"
+        
+        return "Maximum iterations reached while processing tool calls."
+    
+    async def _process_tool_calls_and_get_response(self, tool_calls, previous_response_id):
+        """Process tool calls and return the next response."""
+        input_items = []
+        
+        # Create a mapping of tool names to servers for quick lookup
+        tool_to_server = {}
+        all_tools = []
+        for server_info in self.server_infos:
+            all_tools.extend(server_info.tools)
+            for tool_name in server_info.tool_names:
+                tool_to_server[tool_name] = server_info
+        
+        # Process each tool call and create input items for both the function call and its output
+        for tool_call_info in tool_calls:
+            function_name = tool_call_info["function_name"]
+            function_args = tool_call_info["function_args"]
+            tool_call_id = tool_call_info["id"]
+
+            # Add the original function call to input
+            function_call_input = {
+                "type": "function_call",
+                "call_id": tool_call_id,
+                "name": function_name,
+                "arguments": json.dumps(function_args) if isinstance(function_args, dict) else str(function_args)
+            }
+            input_items.append(function_call_input)
+
+            # Check if this is an MCP tool and find the appropriate server
+            server_info = tool_to_server.get(function_name)
+            if server_info:
+                try:
+                    tool_output = await execute_mcp_tool(
+                        server_info.session, function_name, function_args
+                    )
+                    tool_response = build_tool_response_input(tool_call_id, tool_output)
+                    input_items.append(tool_response)
+                except Exception as e:
+                    error_output = build_tool_response_input(
+                        tool_call_id, f"Error executing tool '{function_name}': {e}"
+                    )
+                    input_items.append(error_output)
+            else:
+                logger.warning(f"Agent: Error - Unknown tool requested by LLM: {function_name}")
+                error_output = build_tool_response_input(tool_call_id, "Unknown tool")
+                input_items.append(error_output)
+        
+        # Make a follow-up call to the Responses API with both function calls and their outputs
+        if input_items:
+            response = self.inference_client.create_response(
+                input_data=input_items,
+                tools=all_tools,
+                previous_response_id=previous_response_id
             )
-            if new_response_id:
-                self.last_response_id = new_response_id
-            return final_response
-        else:
-            return assistant_message or "No content in response"
+            return response
+        
+        return None
 
     async def chat(self, user_input):
         """
@@ -607,30 +742,30 @@ class Agent:
         await self.cleanup()
 
     @classmethod
-    async def create(cls, server_config=None, server_spec=None, tools=None, inference_client=None):
+    async def create(cls, server_configs=None, server_specs=None, tools=None, inference_client=None):
         """
         Factory method to create and initialize an Agent.
 
         Args:
-            server_config (MCPServerConfig): Server configuration object
-            server_spec (str): Server specification string (alternative to server_config)
-            tools (list): List of tool names to use (overrides tools in config)
+            server_configs (List[MCPServerConfig] or MCPServerConfig): Server configuration objects
+            server_specs (List[str] or str): Server specification strings (alternative to server_configs)
+            tools (list): List of tool names to use (overrides tools in all configs)
             inference_client (InferenceClient, optional): Inference client to use for API calls
 
         Returns:
             Agent: Initialized agent, or None if initialization failed
         """
-        agent = cls(server_config, server_spec, tools, inference_client)
+        agent = cls(server_configs, server_specs, tools, inference_client)
         success = await agent.initialize()
         return agent if success else None
 
 
 # --- 9. Interactive Console Interface ---
-async def run_interactive_agent(server_config=None):
+async def run_interactive_agent(server_configs):
     """Run the agent in interactive console mode."""
-    agent = await Agent.create(server_config)
+    agent = await Agent.create(server_configs)
     if not agent:
-        print("Failed to start MCP client. Exiting.")
+        logger.warning("Failed to start MCP client. Exiting.")
         return
 
     print(f"\nAgent ({agent.inference_client.model}) ready. Type 'quit' or 'exit' to end.")
@@ -646,7 +781,8 @@ async def run_interactive_agent(server_config=None):
                 response = await agent.process_message(user_input)
                 print(f"Agent: {response}")
             except Exception as e:
-                print(f"Agent: Error processing message: {e}")
+                logger.error(f"Error processing message: {e}")
+                print(f"Agent: Error processing your message. Please try again.")
 
     finally:
         await agent.cleanup()
@@ -675,26 +811,42 @@ Server specification formats:
     - remote:http://localhost:8000/sse     (SSE transport)
     - remote:ws://localhost:8000           (WebSocket - not supported yet)
 
+Multiple servers:
+  Use multiple --server arguments to connect to multiple servers:
+    --server weather_mcp_server.py --server nps_mcp_server.py
+    --server 'weather.py[get_weather]' --server 'remote:http://localhost:8000'
+
 Examples:
   python openai_mcp_agent.py --server weather_mcp_server.py
   python openai_mcp_agent.py --server 'weather_mcp_server.py[get_current_weather]'
   python openai_mcp_agent.py --server local:my_server.py:node
   python openai_mcp_agent.py --server weather_mcp_server.py --tools get_current_weather
   python openai_mcp_agent.py --server remote:http://localhost:8000
+  python openai_mcp_agent.py --server weather.py --server nps_server.py
+  python openai_mcp_agent.py --server weather.py --log-level DEBUG
         """
     )
     
     parser.add_argument(
         "--server", "-s",
         type=str,
+        action="append",  # Allow multiple --server arguments
         required=True,
-        help="MCP server specification (required)"
+        help="MCP server specification (can be specified multiple times for multiple servers)"
     )
     
     parser.add_argument(
         "--tools", "-t",
         type=str,
-        help="Comma-separated list of tools to use (overrides tools in server spec)"
+        help="Comma-separated list of tools to use (applies to all servers, overrides tools in server specs)"
+    )
+    
+    parser.add_argument(
+        "--log-level", "-l",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level (default: INFO)"
     )
     
     return parser.parse_args()
@@ -702,17 +854,26 @@ Examples:
 
 # --- 11. Main Entry Point ---
 async def main():
-    """Main entry point - runs interactive agent with configurable server."""
+    """Main entry point - runs interactive agent with configurable servers."""
     args = parse_arguments()
     
+    # Configure logging based on command line argument
+    log_level = getattr(logging, args.log_level.upper())
+    setup_logging(log_level)
+    
     try:
-        server_config = parse_server_config(args.server, args.tools)
-        await run_interactive_agent(server_config)
+        # Parse all server configurations
+        server_configs = []
+        for server_spec in args.server:
+            server_config = parse_server_config(server_spec, args.tools)
+            server_configs.append(server_config)
+        
+        await run_interactive_agent(server_configs)
     except ValueError as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
         return 1
     except KeyboardInterrupt:
-        print("\nGoodbye!")
+        logger.info("\nGoodbye!")
         return 0
 
 
