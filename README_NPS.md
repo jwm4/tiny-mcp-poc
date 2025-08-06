@@ -55,6 +55,21 @@ print(response)
 await agent.cleanup()
 ```
 
+Alternatively, you can use it with the CLI for
+[openai_mcp_agent.py](./openai_mcp_agent.py), which will provide a simple interactive
+chat session, e.g.:
+
+```bash
+python openai_mcp_agent.py --server nps_mcp_server.py
+```
+
+or:
+
+```bash
+python nps_mcp_server.py --transport sse --port 3000 &
+python openai_mcp_agent.py --server remote:http://localhost:3000
+```
+
 ## API Reference
 
 ### search_parks
