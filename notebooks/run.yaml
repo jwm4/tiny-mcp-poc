@@ -141,19 +141,23 @@ inference_store:
   db_path: ${env.SQLITE_STORE_DIR:=~/.llama/distributions/sample-notebook}/inference_store.db
 models:
 - metadata: {}
-  model_id: meta-llama/llama-3-3-70b-instruct
+  model_id: watsonx-Llama-3.3-70B-Instruct
   provider_id: watsonx
+  provider_model_id: meta-llama/llama-3-3-70b-instruct
   model_type: llm
 - metadata: {}
   model_id: Llama-3.3-70B-Instruct
+  provider_model_id: Llama-3.3-70B-Instruct
   provider_id: llama-openai-compat
   model_type: llm
 - metadata: {}
   model_id: gpt-3.5-turbo
+  provider_model_id: gpt-3.5-turbo
   provider_id: openai
   model_type: llm
 - metadata: {}
   model_id: gpt-4o
+  provider_model_id: gpt-4o
   provider_id: openai
   model_type: llm
 - metadata:
